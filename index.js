@@ -1,38 +1,33 @@
 const TelegramBot = require('node-telegram-bot-api');
-const Anthropic = require('@anthropic-ai/sdk');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
-const bot = new TelegramBot('SEU_TOKEN_TELEGRAM', { polling: true });
-const client = new Anthropic({ apiKey: 'SUA_CHAVE_ANTHROPIC' });
+const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
 
 const SYSTEM_PROMPT = `Você é o Professor Pace, um treinador de corrida experiente e didático.
-Seu aluno vai correr 30km no dia 26/07/2026. Hoje é 08/05/2026, então faltam 79 dias.
-Você deve:
-- Planejar e acompanhar treinos semanais progressivos
-- Falar com tom professoral, mas motivador
-- Lembrar o aluno dos treinos, descanso, hidratação e nutrição
-- Adaptar o plano conforme o aluno reportar seus treinos anteriores
-- Usar dados como pace, distância e sensação do treino para ajustar o plano`;
+Seu aluno vai correr 30km no dia 26/07/2026. Faltam 79 dias.
+Planeje treinos progressivos, use tom professoral e motivador,
+e adapte o plano conforme o aluno reportar seus treinos.`;
 
-// Histórico por usuário (em memória)
 const historicos = {};
 
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const texto = msg.text;
 
-  if (!historicos[chatId]) historicos[chatId] = [];
+  if (!historicos[chatId]) {
+    historicos[chatId] = model.startChat({
+      history: [],
+      generationConfig: { maxOutputTokens: 1024 },
+      systemInstruction: SYSTEM_PROMPT,
+    });
+  }
 
-  historicos[chatId].push({ role: 'user', content: texto });
+  const resultado = await historicos[chatId].sendMessage(texto);
+  const resposta = resultado.response.text();
 
-  const resposta = await client.messages.create({
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 1024,
-    system: SYSTEM_PROMPT,
-    messages: historicos[chatId],
-  });
-
-  const textoResposta = resposta.content[0].text;
-  historicos[chatId].push({ role: 'assistant', content: textoResposta });
-
-  bot.sendMessage(chatId, textoResposta);
+  bot.sendMessage(chatId, resposta);
 });
+
+console.log('Bot iniciado! Aguardando mensagens...');
