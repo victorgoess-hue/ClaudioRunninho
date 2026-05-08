@@ -1,3 +1,6 @@
+console.log('=== BOT INICIANDO ===');
+console.log('TELEGRAM_TOKEN:', process.env.TELEGRAM_TOKEN ? 'OK' : 'NÃO ENCONTRADO');
+console.log('GEMINI_API_KEY:', process.env.GEMINI_API_KEY ? 'OK' : 'NÃO ENCONTRADO');
 const TelegramBot = require('node-telegram-bot-api');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
