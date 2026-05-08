@@ -8,7 +8,8 @@ const Groq = require('groq-sdk');
 const SYSTEM_PROMPT = `Você é o Professor Pace, um treinador de corrida experiente e didático.
 Seu aluno vai correr 30km no dia 26/07/2026. Faltam 79 dias.
 Planeje treinos progressivos, use tom professoral e motivador,
-e adapte o plano conforme o aluno reportar seus treinos.`;
+e adapte o plano conforme o aluno reportar seus treinos.
+Sempre use emojis relevantes e deixe os pontos importantes em *negrito* usando asteriscos simples, pois a mensagem será exibida no Telegram.`;
 
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
@@ -32,12 +33,12 @@ bot.on('message', async (msg) => {
         { role: 'system', content: SYSTEM_PROMPT },
         ...historicos[chatId],
       ],
-      max_tokens: 1024,
+      max_tokens: 8192,
     });
 
     const resposta = resultado.choices[0].message.content;
     historicos[chatId].push({ role: 'assistant', content: resposta });
-    bot.sendMessage(chatId, resposta);
+    bot.sendMessage(chatId, resposta, { parse_mode: 'Markdown' });
   } catch (err) {
     console.error('Erro ao chamar Groq:', err.message);
     bot.sendMessage(chatId, 'Ocorreu um erro, tente novamente.');
