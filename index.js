@@ -13,7 +13,7 @@ e adapte o plano conforme o aluno reportar seus treinos.`;
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({
-  model: 'gemini-1.5-flash-latest',
+  model: 'gemini-1.5-flash',
   systemInstruction: SYSTEM_PROMPT,
 });
 
@@ -35,7 +35,7 @@ bot.on('message', async (msg) => {
     const resposta = resultado.response.text();
     bot.sendMessage(chatId, resposta);
   } catch (err) {
-    console.error('Erro ao chamar Gemini:', err);
+    console.error('Erro ao chamar Gemini:', err.message);
     bot.sendMessage(chatId, 'Ocorreu um erro, tente novamente.');
   }
 });
