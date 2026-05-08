@@ -6,7 +6,7 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "node-telegram-bot-api": "^0.64.0",
-    "@anthropic-ai/sdk": "^0.20.0"
-  }
+  "node-telegram-bot-api": "^0.64.0",
+  "@google/generative-ai": "^0.2.0"
+}
 }
