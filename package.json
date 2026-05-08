@@ -8,5 +8,5 @@
   "dependencies": {
     "node-telegram-bot-api": "^0.64.0",
     "@google/generative-ai": "^0.21.0"
-  }
+}
 }
