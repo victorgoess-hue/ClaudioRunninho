@@ -38,7 +38,20 @@ bot.on('message', async (msg) => {
 
     const resposta = resultado.choices[0].message.content;
     historicos[chatId].push({ role: 'assistant', content: resposta });
-    bot.sendMessage(chatId, resposta, { parse_mode: 'Markdown' });
+    const LIMITE = 4000;
+if (resposta.length <= LIMITE) {
+  bot.sendMessage(chatId, resposta, { parse_mode: 'Markdown' });
+} else {
+  const partes = [];
+  let texto = resposta;
+  while (texto.length > 0) {
+    partes.push(texto.substring(0, LIMITE));
+    texto = texto.substring(LIMITE);
+  }
+  for (const parte of partes) {
+    await bot.sendMessage(chatId, parte, { parse_mode: 'Markdown' });
+  }
+}
   } catch (err) {
     console.error('Erro ao chamar Groq:', err.message);
     bot.sendMessage(chatId, 'Ocorreu um erro, tente novamente.');
