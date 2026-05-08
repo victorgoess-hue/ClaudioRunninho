@@ -136,6 +136,11 @@ bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const texto = msg.text;
 
+  if (!texto) {
+    bot.sendMessage(chatId, 'Por favor, envie apenas mensagens de texto. 🏃‍♂️');
+    return;
+  }
+
   if (!historicos[chatId]) {
     historicos[chatId] = [];
   }
