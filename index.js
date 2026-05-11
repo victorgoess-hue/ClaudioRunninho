@@ -1,16 +1,16 @@
 console.log('=== BOT INICIANDO ===');
 console.log('TELEGRAM_TOKEN:', process.env.TELEGRAM_TOKEN ? 'OK' : 'NÃO ENCONTRADO');
-console.log('GEMINI_API_KEY:', process.env.GEMINI_API_KEY ? 'OK' : 'NÃO ENCONTRADO');
+console.log('GROQ_API_KEY:', process.env.GROQ_API_KEY ? 'OK' : 'NÃO ENCONTRADO');
 
 const TelegramBot = require('node-telegram-bot-api');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const Groq = require('groq-sdk');
 
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-const MODELO = 'gemini-2.0-flash';
-const MAX_HISTORICO = 50; // Gemini free tier: contexto de 1M tokens — histórico bem maior
-const MAX_TOKENS = 2048;
+const MODELO = 'llama-3.3-70b-versatile';
+const MAX_HISTORICO = 6;  // Groq free tier: limite de 12.000 tokens por requisição
+const MAX_TOKENS = 1024;
 
 const SYSTEM_PROMPT = `Você é o Professor Pace, um treinador de corrida experiente, didático e exigente.
 
@@ -133,19 +133,12 @@ SEMANA 13 (PROVA)
 - Acompanhe os treinos reportados pelo aluno e ajuste os feedbacks
 - Quando o aluno reportar um treino, analise o pace, distância e sensação
 - Lembre sempre qual é o treino do dia ou da semana atual
-- Celebre conquistas e corrija erros com firmeza`;
+- Celebre conquistas e corrija erros com firmeza
+- Seja objetivo para não ultrapassar o limite de tokens`;
 
 const historicos = {};
 
-// Converte histórico no formato que o Gemini espera
-function converterHistorico(historico) {
-  return historico.map(msg => ({
-    role: msg.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: msg.content }],
-  }));
-}
-
-// Trunca o histórico se necessário
+// Trunca o histórico para não estourar o limite de 12.000 tokens do Groq free tier
 function truncarHistorico(historico) {
   if (historico.length <= MAX_HISTORICO) return historico;
   return historico.slice(historico.length - MAX_HISTORICO);
@@ -187,31 +180,29 @@ bot.on('message', async (msg) => {
 
   try {
     const historicoTruncado = truncarHistorico(historicos[chatId]);
-    // O último item é a mensagem atual — o restante é o histórico anterior
-    const mensagemAtual = historicoTruncado[historicoTruncado.length - 1].content;
-    const historicoAnterior = historicoTruncado.slice(0, -1);
 
-    const model = genAI.getGenerativeModel({
+    const resultado = await groq.chat.completions.create({
       model: MODELO,
-      systemInstruction: SYSTEM_PROMPT,
-      generationConfig: { maxOutputTokens: MAX_TOKENS },
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        ...historicoTruncado,
+      ],
+      max_tokens: MAX_TOKENS,
     });
 
-    const chat = model.startChat({
-      history: converterHistorico(historicoAnterior),
-    });
-
-    const resultado = await chat.sendMessage(mensagemAtual);
-    const resposta = resultado.response.text();
-
+    const resposta = resultado.choices[0].message.content;
     historicos[chatId].push({ role: 'assistant', content: resposta });
     await enviarMensagemLonga(chatId, resposta);
 
   } catch (err) {
-    console.error('Erro ao chamar Gemini:', err.message);
+    console.error('Erro ao chamar Groq:', err.message);
 
-    if (err.status === 429) {
-      bot.sendMessage(chatId, '⚠️ Limite de requisições atingido, aguarde um momento e tente novamente.');
+    if (err.status === 429 || err.status === 413) {
+      historicos[chatId] = [];
+      bot.sendMessage(
+        chatId,
+        '⚠️ Limite temporário atingido, precisei reiniciar o histórico. Pode repetir sua última mensagem?'
+      );
     } else {
       bot.sendMessage(chatId, 'Ocorreu um erro, tente novamente.');
     }
