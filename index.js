@@ -8,7 +8,7 @@ const Cerebras = require('@cerebras/cerebras_cloud_sdk');
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
 const cerebras = new Cerebras({ apiKey: process.env.CEREBRAS_API_KEY });
 
-const MODELO = 'gpt-oss-120b';
+const MODELO = 'llama3.1-70b';
 const MAX_HISTORICO = 8;  // Cerebras free tier: contexto limitado a 8.192 tokens
 const MAX_TOKENS = 1024;
 
