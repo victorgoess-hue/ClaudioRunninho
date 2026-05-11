@@ -4,15 +4,131 @@ console.log('GROQ_API_KEY:', process.env.GROQ_API_KEY ? 'OK' : 'NÃO ENCONTRADO'
 
 const TelegramBot = require('node-telegram-bot-api');
 const Groq = require('groq-sdk');
+const fs = require('fs');
+const path = require('path');
 
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 const MODELO = 'llama-3.3-70b-versatile';
-const MAX_HISTORICO = 6;  // Groq free tier: limite de 12.000 tokens por requisição
+const MAX_HISTORICO = 6;
 const MAX_TOKENS = 1024;
+const DADOS_PATH = path.join(__dirname, 'treinos.json');
 
-const SYSTEM_PROMPT = `Você é o Professor Pace, um treinador de corrida experiente, didático e exigente.
+// ─────────────────────────────────────────
+// PERSISTÊNCIA DE TREINOS
+// ─────────────────────────────────────────
+
+function carregarDados() {
+  if (!fs.existsSync(DADOS_PATH)) {
+    fs.writeFileSync(DADOS_PATH, JSON.stringify({ treinos: [] }, null, 2));
+  }
+  return JSON.parse(fs.readFileSync(DADOS_PATH, 'utf8'));
+}
+
+function salvarDados(dados) {
+  fs.writeFileSync(DADOS_PATH, JSON.stringify(dados, null, 2));
+}
+
+function registrarTreino(treino) {
+  const dados = carregarDados();
+  dados.treinos.push({
+    ...treino,
+    registradoEm: new Date().toISOString(),
+  });
+  salvarDados(dados);
+}
+
+// ─────────────────────────────────────────
+// CÁLCULOS DE DESEMPENHO
+// ─────────────────────────────────────────
+
+// Converte "6:30" (mm:ss) para segundos
+function paceParaSegundos(pace) {
+  if (!pace || typeof pace !== 'string') return null;
+  const match = pace.match(/^(\d+):(\d{2})$/);
+  if (!match) return null;
+  return parseInt(match[1]) * 60 + parseInt(match[2]);
+}
+
+// Converte segundos de volta para "mm:ss"
+function segundosParaPace(segundos) {
+  if (!segundos) return '—';
+  const min = Math.floor(segundos / 60);
+  const seg = Math.round(segundos % 60).toString().padStart(2, '0');
+  return `${min}:${seg}`;
+}
+
+function calcularEstatisticas() {
+  const dados = carregarDados();
+  const treinos = dados.treinos;
+
+  if (treinos.length === 0) return null;
+
+  const totalTreinos = treinos.length;
+  const totalKm = treinos.reduce((acc, t) => acc + (t.distancia || 0), 0);
+
+  const comPace = treinos.filter(t => t.pace && paceParaSegundos(t.pace));
+  const mediaPaceSegundos = comPace.length > 0
+    ? comPace.reduce((acc, t) => acc + paceParaSegundos(t.pace), 0) / comPace.length
+    : null;
+
+  // Agrupamento por semana
+  const porSemana = {};
+  treinos.forEach(t => {
+    const semana = t.semana || 'sem_semana';
+    if (!porSemana[semana]) porSemana[semana] = { km: 0, paces: [], treinos: 0 };
+    porSemana[semana].km += t.distancia || 0;
+    porSemana[semana].treinos += 1;
+    if (t.pace && paceParaSegundos(t.pace)) {
+      porSemana[semana].paces.push(paceParaSegundos(t.pace));
+    }
+  });
+
+  const evolucaoSemanal = Object.entries(porSemana).map(([semana, dados]) => ({
+    semana,
+    km: parseFloat(dados.km.toFixed(1)),
+    treinos: dados.treinos,
+    mediaPace: dados.paces.length > 0
+      ? segundosParaPace(dados.paces.reduce((a, b) => a + b, 0) / dados.paces.length)
+      : '—',
+  }));
+
+  return {
+    totalTreinos,
+    totalKm: parseFloat(totalKm.toFixed(1)),
+    mediaPace: segundosParaPace(mediaPaceSegundos),
+    evolucaoSemanal,
+    ultimoTreino: treinos[treinos.length - 1],
+  };
+}
+
+function formatarRelatorio() {
+  const stats = calcularEstatisticas();
+  if (!stats) return '📭 Nenhum treino registrado ainda.';
+
+  let texto = `📊 <b>Seu Desempenho Geral</b>\n\n`;
+  texto += `🏃 Treinos registrados: <b>${stats.totalTreinos}</b>\n`;
+  texto += `📏 Total de km: <b>${stats.totalKm} km</b>\n`;
+  texto += `⏱️ Pace médio geral: <b>${stats.mediaPace}/km</b>\n\n`;
+  texto += `📅 <b>Evolução por Semana:</b>\n`;
+
+  stats.evolucaoSemanal.forEach(s => {
+    texto += `\n• Semana ${s.semana}: ${s.km} km em ${s.treinos} treino(s) — pace médio ${s.mediaPace}/km`;
+  });
+
+  if (stats.ultimoTreino) {
+    texto += `\n\n🕐 <b>Último treino:</b> ${stats.ultimoTreino.descricao || '—'} (${stats.ultimoTreino.distancia || '?'} km a ${stats.ultimoTreino.pace || '?'}/km)`;
+  }
+
+  return texto;
+}
+
+// ─────────────────────────────────────────
+// SYSTEM PROMPT
+// ─────────────────────────────────────────
+
+const SYSTEM_PROMPT_BASE = `Você é o Professor Pace, um treinador de corrida experiente, didático e exigente.
 
 Seu aluno tem o seguinte perfil:
 - Histórico de meias maratonas
@@ -125,6 +241,16 @@ SEMANA 13 (PROVA)
 - Domingo 26/07: 30KM
   Estratégia: km 1–10 a 6:55 / km 11–20 a 6:40 / km 21–30 a 6:20–6:35
 
+# REGISTRO DE TREINOS
+Quando o aluno reportar um treino, você DEVE extrair os dados e responder no seguinte formato especial
+ANTES do seu feedback normal, numa linha separada:
+
+TREINO_JSON:{"semana":2,"distancia":7.0,"pace":"6:10","descricao":"7km ritmo","sensacao":"boa"}
+
+Extraia do relato do aluno: semana atual, distância em km, pace médio no formato mm:ss, descrição curta e sensação (boa/cansado/ótima/ruim).
+Se algum dado não for mencionado, omita o campo ou use null.
+Coloque o TREINO_JSON sempre na primeira linha da resposta, antes de qualquer texto.
+
 # COMO RESPONDER
 - Use tom professoral, exigente mas motivador
 - Use emojis relevantes
@@ -136,15 +262,21 @@ SEMANA 13 (PROVA)
 - Celebre conquistas e corrija erros com firmeza
 - Seja objetivo para não ultrapassar o limite de tokens`;
 
+// ─────────────────────────────────────────
+// HISTÓRICO EM MEMÓRIA
+// ─────────────────────────────────────────
+
 const historicos = {};
 
-// Trunca o histórico para não estourar o limite de 12.000 tokens do Groq free tier
 function truncarHistorico(historico) {
   if (historico.length <= MAX_HISTORICO) return historico;
   return historico.slice(historico.length - MAX_HISTORICO);
 }
 
-// Envia mensagem longa em partes com parse_mode HTML
+// ─────────────────────────────────────────
+// ENVIO DE MENSAGEM
+// ─────────────────────────────────────────
+
 async function enviarMensagemLonga(chatId, texto) {
   const LIMITE = 4000;
   const partes = [];
@@ -163,12 +295,38 @@ async function enviarMensagemLonga(chatId, texto) {
   }
 }
 
+// ─────────────────────────────────────────
+// HANDLER DE MENSAGENS
+// ─────────────────────────────────────────
+
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const texto = msg.text;
 
   if (!texto) {
     bot.sendMessage(chatId, 'Por favor, envie apenas mensagens de texto. 🏃‍♂️');
+    return;
+  }
+
+  // Comando: ver relatório de desempenho
+  if (texto === '/desempenho' || texto === '/stats') {
+    await enviarMensagemLonga(chatId, formatarRelatorio());
+    return;
+  }
+
+  // Comando: ver todos os treinos registrados
+  if (texto === '/treinos') {
+    const dados = carregarDados();
+    if (dados.treinos.length === 0) {
+      bot.sendMessage(chatId, '📭 Nenhum treino registrado ainda.');
+      return;
+    }
+    let lista = '📋 <b>Treinos Registrados:</b>\n\n';
+    dados.treinos.forEach((t, i) => {
+      const data = new Date(t.registradoEm).toLocaleDateString('pt-BR');
+      lista += `${i + 1}. [${data}] Sem. ${t.semana || '?'} — ${t.distancia || '?'}km a ${t.pace || '?'}/km — ${t.descricao || ''} (${t.sensacao || '?'})\n`;
+    });
+    await enviarMensagemLonga(chatId, lista);
     return;
   }
 
@@ -184,13 +342,31 @@ bot.on('message', async (msg) => {
     const resultado = await groq.chat.completions.create({
       model: MODELO,
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: SYSTEM_PROMPT_BASE },
         ...historicoTruncado,
       ],
       max_tokens: MAX_TOKENS,
     });
 
-    const resposta = resultado.choices[0].message.content;
+    let resposta = resultado.choices[0].message.content;
+
+    // Detecta e extrai TREINO_JSON da resposta
+    const linhas = resposta.split('\n');
+    const linhaJson = linhas.find(l => l.trim().startsWith('TREINO_JSON:'));
+
+    if (linhaJson) {
+      try {
+        const jsonStr = linhaJson.replace('TREINO_JSON:', '').trim();
+        const treino = JSON.parse(jsonStr);
+        registrarTreino(treino);
+        console.log('Treino registrado:', treino);
+      } catch (e) {
+        console.warn('Falha ao parsear TREINO_JSON:', e.message);
+      }
+      // Remove a linha do JSON da resposta antes de enviar ao usuário
+      resposta = linhas.filter(l => !l.trim().startsWith('TREINO_JSON:')).join('\n').trim();
+    }
+
     historicos[chatId].push({ role: 'assistant', content: resposta });
     await enviarMensagemLonga(chatId, resposta);
 
@@ -210,3 +386,4 @@ bot.on('message', async (msg) => {
 });
 
 console.log('Bot iniciado! Aguardando mensagens...');
+console.log('Comandos disponíveis: /desempenho, /stats, /treinos');
