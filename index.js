@@ -1,9 +1,16 @@
 console.log('=== BOT INICIANDO ===');
 console.log('TELEGRAM_TOKEN:', process.env.TELEGRAM_TOKEN ? 'OK' : 'NÃO ENCONTRADO');
-console.log('GROQ_API_KEY:', process.env.GROQ_API_KEY ? 'OK' : 'NÃO ENCONTRADO');
+console.log('CEREBRAS_API_KEY:', process.env.CEREBRAS_API_KEY ? 'OK' : 'NÃO ENCONTRADO');
 
 const TelegramBot = require('node-telegram-bot-api');
-const Groq = require('groq-sdk');
+const Cerebras = require('@cerebras/cerebras_cloud_sdk');
+
+const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
+const cerebras = new Cerebras({ apiKey: process.env.CEREBRAS_API_KEY });
+
+const MODELO = 'gpt-oss-120b';
+const MAX_HISTORICO = 8;  // Cerebras free tier: contexto limitado a 8.192 tokens
+const MAX_TOKENS = 1024;
 
 const SYSTEM_PROMPT = `Você é o Professor Pace, um treinador de corrida experiente, didático e exigente.
 
@@ -121,16 +128,40 @@ SEMANA 13 (PROVA)
 # COMO RESPONDER
 - Use tom professoral, exigente mas motivador
 - Use emojis relevantes
-- Deixe pontos importantes em *negrito* com asteriscos
+- Formate usando HTML: <b>negrito</b> e <i>itálico</i>
+- NÃO use Markdown com asteriscos (*texto*) ou underlines (_texto_)
 - Acompanhe os treinos reportados pelo aluno e ajuste os feedbacks
 - Quando o aluno reportar um treino, analise o pace, distância e sensação
 - Lembre sempre qual é o treino do dia ou da semana atual
-- Celebre conquistas e corrija erros com firmeza`;
-
-const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+- Celebre conquistas e corrija erros com firmeza
+- Seja objetivo para não ultrapassar o limite de tokens`;
 
 const historicos = {};
+
+// Trunca o histórico para não estourar o contexto do Cerebras (8.192 tokens free tier)
+function truncarHistorico(historico) {
+  if (historico.length <= MAX_HISTORICO) return historico;
+  return historico.slice(historico.length - MAX_HISTORICO);
+}
+
+// Envia mensagem longa em partes com parse_mode HTML
+async function enviarMensagemLonga(chatId, texto) {
+  const LIMITE = 4000;
+  const partes = [];
+  let t = texto;
+  while (t.length > 0) {
+    partes.push(t.substring(0, LIMITE));
+    t = t.substring(LIMITE);
+  }
+  for (const parte of partes) {
+    try {
+      await bot.sendMessage(chatId, parte, { parse_mode: 'HTML' });
+    } catch (err) {
+      console.warn('Falha ao enviar com HTML, enviando sem formatação:', err.message);
+      await bot.sendMessage(chatId, parte);
+    }
+  }
+}
 
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
@@ -148,34 +179,33 @@ bot.on('message', async (msg) => {
   historicos[chatId].push({ role: 'user', content: texto });
 
   try {
-    const resultado = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
+    const historicoTruncado = truncarHistorico(historicos[chatId]);
+
+    const resultado = await cerebras.chat.completions.create({
+      model: MODELO,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
-        ...historicos[chatId],
+        ...historicoTruncado,
       ],
-      max_tokens: 8192,
+      max_tokens: MAX_TOKENS,
     });
 
     const resposta = resultado.choices[0].message.content;
     historicos[chatId].push({ role: 'assistant', content: resposta });
-    const LIMITE = 4000;
-if (resposta.length <= LIMITE) {
-  bot.sendMessage(chatId, resposta, { parse_mode: 'Markdown' });
-} else {
-  const partes = [];
-  let texto = resposta;
-  while (texto.length > 0) {
-    partes.push(texto.substring(0, LIMITE));
-    texto = texto.substring(LIMITE);
-  }
-  for (const parte of partes) {
-    await bot.sendMessage(chatId, parte, { parse_mode: 'Markdown' });
-  }
-}
+    await enviarMensagemLonga(chatId, resposta);
+
   } catch (err) {
-    console.error('Erro ao chamar Groq:', err.message);
-    bot.sendMessage(chatId, 'Ocorreu um erro, tente novamente.');
+    console.error('Erro ao chamar Cerebras:', err.message);
+
+    if (err.status === 429 || err.status === 413) {
+      historicos[chatId] = [];
+      bot.sendMessage(
+        chatId,
+        '⚠️ Limite temporário atingido, precisei reiniciar o histórico. Pode repetir sua última mensagem?'
+      );
+    } else {
+      bot.sendMessage(chatId, 'Ocorreu um erro, tente novamente.');
+    }
   }
 });
 
