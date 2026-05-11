@@ -1,16 +1,16 @@
 console.log('=== BOT INICIANDO ===');
 console.log('TELEGRAM_TOKEN:', process.env.TELEGRAM_TOKEN ? 'OK' : 'NÃO ENCONTRADO');
-console.log('CEREBRAS_API_KEY:', process.env.CEREBRAS_API_KEY ? 'OK' : 'NÃO ENCONTRADO');
+console.log('GEMINI_API_KEY:', process.env.GEMINI_API_KEY ? 'OK' : 'NÃO ENCONTRADO');
 
 const TelegramBot = require('node-telegram-bot-api');
-const Cerebras = require('@cerebras/cerebras_cloud_sdk');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
-const cerebras = new Cerebras({ apiKey: process.env.CEREBRAS_API_KEY });
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-const MODELO = 'llama3.1-70b';
-const MAX_HISTORICO = 8;  // Cerebras free tier: contexto limitado a 8.192 tokens
-const MAX_TOKENS = 1024;
+const MODELO = 'gemini-2.0-flash';
+const MAX_HISTORICO = 50; // Gemini free tier: contexto de 1M tokens — histórico bem maior
+const MAX_TOKENS = 2048;
 
 const SYSTEM_PROMPT = `Você é o Professor Pace, um treinador de corrida experiente, didático e exigente.
 
@@ -133,12 +133,19 @@ SEMANA 13 (PROVA)
 - Acompanhe os treinos reportados pelo aluno e ajuste os feedbacks
 - Quando o aluno reportar um treino, analise o pace, distância e sensação
 - Lembre sempre qual é o treino do dia ou da semana atual
-- Celebre conquistas e corrija erros com firmeza
-- Seja objetivo para não ultrapassar o limite de tokens`;
+- Celebre conquistas e corrija erros com firmeza`;
 
 const historicos = {};
 
-// Trunca o histórico para não estourar o contexto do Cerebras (8.192 tokens free tier)
+// Converte histórico no formato que o Gemini espera
+function converterHistorico(historico) {
+  return historico.map(msg => ({
+    role: msg.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: msg.content }],
+  }));
+}
+
+// Trunca o histórico se necessário
 function truncarHistorico(historico) {
   if (historico.length <= MAX_HISTORICO) return historico;
   return historico.slice(historico.length - MAX_HISTORICO);
@@ -180,29 +187,31 @@ bot.on('message', async (msg) => {
 
   try {
     const historicoTruncado = truncarHistorico(historicos[chatId]);
+    // O último item é a mensagem atual — o restante é o histórico anterior
+    const mensagemAtual = historicoTruncado[historicoTruncado.length - 1].content;
+    const historicoAnterior = historicoTruncado.slice(0, -1);
 
-    const resultado = await cerebras.chat.completions.create({
+    const model = genAI.getGenerativeModel({
       model: MODELO,
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        ...historicoTruncado,
-      ],
-      max_tokens: MAX_TOKENS,
+      systemInstruction: SYSTEM_PROMPT,
+      generationConfig: { maxOutputTokens: MAX_TOKENS },
     });
 
-    const resposta = resultado.choices[0].message.content;
+    const chat = model.startChat({
+      history: converterHistorico(historicoAnterior),
+    });
+
+    const resultado = await chat.sendMessage(mensagemAtual);
+    const resposta = resultado.response.text();
+
     historicos[chatId].push({ role: 'assistant', content: resposta });
     await enviarMensagemLonga(chatId, resposta);
 
   } catch (err) {
-    console.error('Erro ao chamar Cerebras:', err.message);
+    console.error('Erro ao chamar Gemini:', err.message);
 
-    if (err.status === 429 || err.status === 413) {
-      historicos[chatId] = [];
-      bot.sendMessage(
-        chatId,
-        '⚠️ Limite temporário atingido, precisei reiniciar o histórico. Pode repetir sua última mensagem?'
-      );
+    if (err.status === 429) {
+      bot.sendMessage(chatId, '⚠️ Limite de requisições atingido, aguarde um momento e tente novamente.');
     } else {
       bot.sendMessage(chatId, 'Ocorreu um erro, tente novamente.');
     }
